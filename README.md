@@ -79,6 +79,12 @@ Para a maquina do Augusto, existe um instalador pronto:
 powershell -ExecutionPolicy Bypass -File .\scripts\install-augusto.ps1
 ```
 
+Ou, de forma mais simples, basta executar:
+
+```cmd
+Instalar-Augusto.cmd
+```
+
 Fluxo desse instalador:
 
 1. prepara o ambiente local
