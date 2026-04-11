@@ -4,7 +4,7 @@ import argparse
 
 from .browser import BrowserSession
 from .collectors import build_collector
-from .config import RecipientConfig, Settings, SourceConfig
+from .config import NotificationProfileConfig, Settings, SourceConfig
 from .errors import ConfigurationError, MonitorError
 from .logging_setup import configure_logging
 from .notifiers import TeamsWorkflowNotifier
@@ -20,8 +20,13 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--context", dest="context_id", help="Id do contexto configurado.")
     login_parser.add_argument("--source", dest="source_id", help="Id da fonte usada para validar o login.")
 
-    notify_parser = subparsers.add_parser("notify-test", help="Envia um card de teste para os destinatarios.")
-    notify_parser.add_argument("--recipient", dest="recipient_id", help="Id de um destinatario especifico.")
+    notify_parser = subparsers.add_parser("notify-test", help="Envia um card de teste para os perfis configurados.")
+    notify_parser.add_argument("--profile", dest="profile_id", help="Id de um perfil especifico.")
+    notify_parser.add_argument(
+        "--recipient",
+        dest="profile_id_legacy",
+        help=argparse.SUPPRESS,
+    )
 
     snapshot_parser = subparsers.add_parser("snapshot", help="Captura a fonte e imprime um resumo.")
     snapshot_parser.add_argument("--source", dest="source_id", help="Id da fonte configurada.")
@@ -74,12 +79,13 @@ def main() -> int:
             return 0
 
         if args.command == "notify-test":
-            recipients = _resolve_recipients(settings, args.recipient_id)
-            for recipient in recipients:
-                result = notifier.send_test_message(recipient.name, recipient.role, recipient.webhook_url)
+            profile_id = args.profile_id or args.profile_id_legacy
+            profiles = _resolve_profiles(settings, profile_id)
+            for profile in profiles:
+                result = notifier.send_test_message(profile.name, profile.role, profile.webhook_url)
                 logger.info(
-                    "Teste de notificacao concluido para '%s'. HTTP=%s",
-                    recipient.id,
+                    "Teste de notificacao concluido para o perfil '%s'. HTTP=%s",
+                    profile.id,
                     result.status_code,
                 )
             return 0
@@ -147,18 +153,18 @@ def _resolve_login_source(settings: Settings, source_id: str | None, context_id:
     return _resolve_source(settings, None)
 
 
-def _resolve_recipients(settings: Settings, recipient_id: str | None) -> list[RecipientConfig]:
-    if recipient_id:
-        recipient = settings.get_recipient(recipient_id)
-        if not recipient.webhook_url:
-            raise ConfigurationError(f"Destinatario '{recipient_id}' esta sem webhook configurado.")
-        return [recipient]
+def _resolve_profiles(settings: Settings, profile_id: str | None) -> list[NotificationProfileConfig]:
+    if profile_id:
+        profile = settings.get_profile(profile_id)
+        if not profile.webhook_url:
+            raise ConfigurationError(f"Perfil '{profile_id}' esta sem webhook configurado.")
+        return [profile]
 
-    recipients = [
-        recipient
-        for recipient in settings.recipients.values()
-        if recipient.enabled and recipient.webhook_url
+    profiles = [
+        profile
+        for profile in settings.profiles.values()
+        if profile.enabled and profile.webhook_url
     ]
-    if not recipients:
-        raise ConfigurationError("Nenhum destinatario habilitado com webhook configurado.")
-    return recipients
+    if not profiles:
+        raise ConfigurationError("Nenhum perfil habilitado com webhook configurado.")
+    return profiles

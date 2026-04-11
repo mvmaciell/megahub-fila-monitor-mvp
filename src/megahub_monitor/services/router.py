@@ -3,7 +3,7 @@ from __future__ import annotations
 import unicodedata
 from logging import Logger
 
-from ..config import RecipientConfig, RoutingRuleConfig, Settings, SourceConfig
+from ..config import Settings, SourceConfig, SubscriptionConfig
 from ..models import DeliveryRequest, LoadEntry, Ticket
 from ..repository.sqlite_repository import SQLiteRepository
 
@@ -29,47 +29,50 @@ class NotificationRouter:
         deliveries: list[DeliveryRequest] = []
 
         for ticket in new_tickets:
-            for rule in self.settings.rules:
-                if not rule.enabled or source.id not in rule.source_ids:
+            for subscription in self.settings.subscriptions:
+                if not subscription.enabled or source.id not in subscription.source_ids:
                     continue
-                if not self._matches_rule(rule, ticket):
+                if not self._matches_rule(subscription, ticket):
                     continue
 
-                for recipient_id in rule.recipient_ids:
-                    recipient = self.settings.get_recipient(recipient_id)
-                    if not recipient.enabled:
+                for profile_id in subscription.profile_ids:
+                    profile = self.settings.get_profile(profile_id)
+                    if not profile.enabled:
                         continue
-                    if not recipient.webhook_url:
+                    if not profile.webhook_url:
                         self.logger.warning(
-                            "Destinatario '%s' esta sem webhook configurado. Regra '%s' ignorada.",
-                            recipient.id,
-                            rule.id,
+                            "Perfil '%s' esta sem webhook configurado. Subscricao '%s' ignorada.",
+                            profile.id,
+                            subscription.id,
                         )
                         continue
-                    if self.repository.has_delivery(source.id, rule.id, recipient.id, ticket.number):
+                    if self.repository.has_delivery(source.id, subscription.id, profile.id, ticket.number):
                         continue
 
                     deliveries.append(
                         DeliveryRequest(
                             source_id=source.id,
                             source_name=source.name,
-                            rule_id=rule.id,
-                            title_prefix=rule.title_prefix,
-                            recipient_id=recipient.id,
-                            recipient_name=recipient.name,
-                            recipient_role=recipient.role,
-                            webhook_url=recipient.webhook_url,
+                            rule_id=subscription.id,
+                            title_prefix=subscription.title_prefix,
+                            recipient_id=profile.id,
+                            recipient_name=profile.name,
+                            recipient_role=profile.role,
+                            webhook_url=profile.webhook_url,
                             ticket=ticket,
-                            load_entries=load_entries if rule.include_load else [],
+                            load_entries=load_entries if subscription.include_load else [],
                         )
                     )
 
         return deliveries
 
-    def _matches_rule(self, rule: RoutingRuleConfig, ticket: Ticket) -> bool:
-        if rule.ticket_types and _normalize(ticket.ticket_type) not in rule.ticket_types:
+    def _matches_rule(self, subscription: SubscriptionConfig, ticket: Ticket) -> bool:
+        if subscription.ticket_types and _normalize(ticket.ticket_type) not in subscription.ticket_types:
             return False
-        if rule.priorities and _normalize(ticket.priority) not in rule.priorities:
+        if subscription.priorities and _normalize(ticket.priority) not in subscription.priorities:
+            return False
+        if subscription.companies and _normalize(ticket.company) not in subscription.companies:
+            return False
+        if subscription.consultants and _normalize(ticket.consultant) not in subscription.consultants:
             return False
         return True
-
