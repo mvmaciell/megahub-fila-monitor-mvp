@@ -30,6 +30,27 @@ def _resolve_path(project_root: Path, raw_value: str | None, default_relative: s
     return path
 
 
+def _resolve_existing_path(
+    project_root: Path,
+    raw_value: str | None,
+    default_relative: str,
+    fallback_relative: str | None = None,
+) -> Path:
+    if raw_value and raw_value.strip():
+        return _resolve_path(project_root, raw_value, default_relative)
+
+    preferred = project_root / default_relative
+    if preferred.exists():
+        return preferred
+
+    if fallback_relative:
+        fallback = project_root / fallback_relative
+        if fallback.exists():
+            return fallback
+
+    return preferred
+
+
 def _normalize_filter_values(values: list[str] | None) -> list[str]:
     if not values:
         return []
@@ -61,7 +82,7 @@ class SourceConfig:
 
 
 @dataclass(slots=True)
-class RecipientConfig:
+class NotificationProfileConfig:
     id: str
     name: str
     role: str
@@ -70,16 +91,18 @@ class RecipientConfig:
 
 
 @dataclass(slots=True)
-class RoutingRuleConfig:
+class SubscriptionConfig:
     id: str
     name: str
     source_ids: list[str]
-    recipient_ids: list[str]
+    profile_ids: list[str]
     title_prefix: str
     enabled: bool = True
     include_load: bool = False
     ticket_types: list[str] = field(default_factory=list)
     priorities: list[str] = field(default_factory=list)
+    companies: list[str] = field(default_factory=list)
+    consultants: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -93,22 +116,33 @@ class Settings:
     log_file_path: Path
     lock_file_path: Path
     contexts_path: Path
-    routing_path: Path
+    profiles_path: Path
     teams_request_timeout_seconds: int
     contexts: dict[str, BrowserContextConfig]
     sources: dict[str, SourceConfig]
-    recipients: dict[str, RecipientConfig]
-    rules: list[RoutingRuleConfig]
+    profiles: dict[str, NotificationProfileConfig]
+    subscriptions: list[SubscriptionConfig]
 
     @classmethod
     def load(cls) -> "Settings":
         project_root = Path(__file__).resolve().parents[2]
         load_dotenv(project_root / ".env", override=False)
 
-        contexts_path = _resolve_path(project_root, os.getenv("CONTEXTS_CONFIG_PATH"), "config/contexts.toml")
-        routing_path = _resolve_path(project_root, os.getenv("ROUTING_CONFIG_PATH"), "config/routing.toml")
+        contexts_path = _resolve_existing_path(
+            project_root,
+            os.getenv("CONTEXTS_CONFIG_PATH"),
+            "config/local/contexts.toml",
+            "config/contexts.toml",
+        )
+        profiles_env = os.getenv("PROFILES_CONFIG_PATH") or os.getenv("ROUTING_CONFIG_PATH")
+        profiles_path = _resolve_existing_path(
+            project_root,
+            profiles_env,
+            "config/local/profiles.toml",
+            "config/routing.toml",
+        )
         contexts, sources = cls._load_contexts(project_root, contexts_path)
-        recipients, rules = cls._load_routing(routing_path)
+        profiles, subscriptions = cls._load_profiles(profiles_path)
 
         channel = os.getenv("PLAYWRIGHT_CHANNEL", "msedge").strip()
         settings = cls(
@@ -121,12 +155,12 @@ class Settings:
             log_file_path=_resolve_path(project_root, os.getenv("LOG_FILE_PATH"), "data/logs/monitor.log"),
             lock_file_path=_resolve_path(project_root, os.getenv("LOCK_FILE_PATH"), "data/megahub-monitor.lock"),
             contexts_path=contexts_path,
-            routing_path=routing_path,
+            profiles_path=profiles_path,
             teams_request_timeout_seconds=_to_int(os.getenv("TEAMS_REQUEST_TIMEOUT_SECONDS"), 15),
             contexts=contexts,
             sources=sources,
-            recipients=recipients,
-            rules=rules,
+            profiles=profiles,
+            subscriptions=subscriptions,
         )
         settings.ensure_directories()
         settings.validate()
@@ -186,50 +220,57 @@ class Settings:
         return contexts, sources
 
     @staticmethod
-    def _load_routing(
-        routing_path: Path,
-    ) -> tuple[dict[str, RecipientConfig], list[RoutingRuleConfig]]:
-        if not routing_path.exists():
-            raise ConfigurationError(f"Arquivo de roteamento nao encontrado: {routing_path}")
+    def _load_profiles(
+        profiles_path: Path,
+    ) -> tuple[dict[str, NotificationProfileConfig], list[SubscriptionConfig]]:
+        if not profiles_path.exists():
+            raise ConfigurationError(f"Arquivo de perfis nao encontrado: {profiles_path}")
 
-        with routing_path.open("rb") as handle:
+        with profiles_path.open("rb") as handle:
             document = tomllib.load(handle)
 
-        recipients: dict[str, RecipientConfig] = {}
-        for raw in document.get("recipients", []):
-            recipient_id = str(raw["id"]).strip()
-            if recipient_id in recipients:
-                raise ConfigurationError(f"Destinatario duplicado no arquivo de roteamento: {recipient_id}")
+        profiles: dict[str, NotificationProfileConfig] = {}
+        raw_profiles = document.get("profiles", document.get("recipients", []))
+        for raw in raw_profiles:
+            profile_id = str(raw["id"]).strip()
+            if profile_id in profiles:
+                raise ConfigurationError(f"Perfil duplicado no arquivo de configuracao: {profile_id}")
 
             webhook_env = str(raw.get("webhook_env", "")).strip()
             webhook_url = str(raw.get("webhook_url", "")).strip()
             if webhook_env:
                 webhook_url = os.getenv(webhook_env, "").strip() or webhook_url
 
-            recipients[recipient_id] = RecipientConfig(
-                id=recipient_id,
-                name=str(raw.get("name", recipient_id)).strip(),
+            profiles[profile_id] = NotificationProfileConfig(
+                id=profile_id,
+                name=str(raw.get("name", profile_id)).strip(),
                 role=str(raw.get("role", "recipient")).strip(),
                 enabled=bool(raw.get("enabled", True)),
                 webhook_url=webhook_url,
             )
 
-        rules: list[RoutingRuleConfig] = []
-        for raw in document.get("rules", []):
-            rule = RoutingRuleConfig(
+        subscriptions: list[SubscriptionConfig] = []
+        raw_subscriptions = document.get("subscriptions", document.get("rules", []))
+        for raw in raw_subscriptions:
+            subscription = SubscriptionConfig(
                 id=str(raw["id"]).strip(),
                 name=str(raw.get("name", raw["id"])).strip(),
                 enabled=bool(raw.get("enabled", True)),
                 source_ids=[str(item).strip() for item in raw.get("source_ids", [])],
-                recipient_ids=[str(item).strip() for item in raw.get("recipient_ids", [])],
+                profile_ids=[
+                    str(item).strip()
+                    for item in raw.get("profile_ids", raw.get("recipient_ids", []))
+                ],
                 title_prefix=str(raw.get("title_prefix", "Novo chamado detectado")).strip(),
                 include_load=bool(raw.get("include_load", False)),
                 ticket_types=_normalize_filter_values(raw.get("ticket_types")),
                 priorities=_normalize_filter_values(raw.get("priorities")),
+                companies=_normalize_filter_values(raw.get("companies")),
+                consultants=_normalize_filter_values(raw.get("consultants")),
             )
-            rules.append(rule)
+            subscriptions.append(subscription)
 
-        return recipients, rules
+        return profiles, subscriptions
 
     def ensure_directories(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,11 +282,13 @@ class Settings:
     def validate(self) -> None:
         if not self.sources:
             raise ConfigurationError("Nenhuma fonte foi configurada em contexts.toml.")
-        if not self.rules:
-            raise ConfigurationError("Nenhuma regra foi configurada em routing.toml.")
+        if not self.profiles:
+            raise ConfigurationError("Nenhum perfil foi configurado em profiles.toml.")
+        if not self.subscriptions:
+            raise ConfigurationError("Nenhuma subscricao foi configurada em profiles.toml.")
 
         valid_source_ids = set(self.sources)
-        valid_recipient_ids = set(self.recipients)
+        valid_profile_ids = set(self.profiles)
         valid_context_ids = set(self.contexts)
         valid_kinds = {"minha_fila", "fila"}
 
@@ -259,19 +302,25 @@ class Settings:
                     f"Fonte habilitada '{source.id}' usa contexto desabilitado: {source.context_id}"
                 )
 
-        for rule in self.rules:
-            missing_sources = [source_id for source_id in rule.source_ids if source_id not in valid_source_ids]
+        for subscription in self.subscriptions:
+            missing_sources = [
+                source_id
+                for source_id in subscription.source_ids
+                if source_id not in valid_source_ids
+            ]
             if missing_sources:
                 raise ConfigurationError(
-                    f"Regra '{rule.id}' referencia fonte(s) inexistente(s): {', '.join(missing_sources)}"
+                    f"Subscricao '{subscription.id}' referencia fonte(s) inexistente(s): {', '.join(missing_sources)}"
                 )
 
-            missing_recipients = [
-                recipient_id for recipient_id in rule.recipient_ids if recipient_id not in valid_recipient_ids
+            missing_profiles = [
+                profile_id
+                for profile_id in subscription.profile_ids
+                if profile_id not in valid_profile_ids
             ]
-            if missing_recipients:
+            if missing_profiles:
                 raise ConfigurationError(
-                    f"Regra '{rule.id}' referencia destinatario(s) inexistente(s): {', '.join(missing_recipients)}"
+                    f"Subscricao '{subscription.id}' referencia perfil(is) inexistente(s): {', '.join(missing_profiles)}"
                 )
 
     def enabled_sources(self) -> list[SourceConfig]:
@@ -289,8 +338,8 @@ class Settings:
         except KeyError as exc:
             raise ConfigurationError(f"Fonte nao encontrada: {source_id}") from exc
 
-    def get_recipient(self, recipient_id: str) -> RecipientConfig:
+    def get_profile(self, profile_id: str) -> NotificationProfileConfig:
         try:
-            return self.recipients[recipient_id]
+            return self.profiles[profile_id]
         except KeyError as exc:
-            raise ConfigurationError(f"Destinatario nao encontrado: {recipient_id}") from exc
+            raise ConfigurationError(f"Perfil nao encontrado: {profile_id}") from exc
