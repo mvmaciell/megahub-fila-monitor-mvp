@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+data/*.db
+data/browser-profile/*
+!data/browser-profile/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+
