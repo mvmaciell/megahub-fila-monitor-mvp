@@ -85,6 +85,12 @@ Ou, de forma mais simples, basta executar:
 Instalar-Augusto.cmd
 ```
 
+Depois da instalacao, o Augusto pode verificar rapidamente se esta tudo funcionando com:
+
+```cmd
+Verificar-Status-Augusto.cmd
+```
+
 Fluxo desse instalador:
 
 1. prepara o ambiente local
