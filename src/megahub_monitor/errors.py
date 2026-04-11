@@ -17,3 +17,6 @@ class CollectionError(MonitorError):
 class NotificationError(MonitorError):
     """Falha ao enviar notificacao."""
 
+
+class LockUnavailableError(MonitorError):
+    """Execucao concorrente detectada."""

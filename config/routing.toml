@@ -1,0 +1,31 @@
+[[recipients]]
+id = "marcus"
+name = "Marcus Vinicius Maciel Vieira"
+role = "consultor"
+enabled = true
+webhook_env = "TEAMS_WEBHOOK_URL"
+
+[[recipients]]
+id = "augusto"
+name = "Augusto Bellucio Ker"
+role = "coordenador tecnico"
+enabled = true
+webhook_env = "TEAMS_WEBHOOK_URL"
+
+[[rules]]
+id = "alerta-consultor-minha-fila"
+name = "Alerta consultor Minha Fila"
+enabled = true
+source_ids = ["minha_fila_marcus"]
+recipient_ids = ["marcus"]
+title_prefix = "Alerta do Consultor"
+include_load = false
+
+[[rules]]
+id = "alerta-coordenador-fila"
+name = "Alerta coordenador Fila"
+enabled = true
+source_ids = ["fila_gerencial"]
+recipient_ids = ["augusto"]
+title_prefix = "Alerta do Coordenador"
+include_load = true

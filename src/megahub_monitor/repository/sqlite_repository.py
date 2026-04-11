@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from logging import Logger
 from pathlib import Path
 
-from ..models import NotificationResult, Ticket
+from ..models import DeliveryRequest, LoadEntry, NotificationResult, Ticket
 
 
 class SQLiteRepository:
@@ -18,27 +18,42 @@ class SQLiteRepository:
         with self._connect() as connection:
             connection.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS app_state (
-                    state_key TEXT PRIMARY KEY,
-                    state_value TEXT NOT NULL
+                CREATE TABLE IF NOT EXISTS source_states (
+                    source_id TEXT PRIMARY KEY,
+                    baseline_initialized_at TEXT,
+                    last_run_at TEXT,
+                    last_success_at TEXT
                 );
 
-                CREATE TABLE IF NOT EXISTS seen_tickets (
-                    ticket_number TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS source_seen_tickets (
+                    source_id TEXT NOT NULL,
+                    ticket_number TEXT NOT NULL,
                     first_seen_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
-                    last_payload_json TEXT NOT NULL
+                    last_payload_json TEXT NOT NULL,
+                    PRIMARY KEY (source_id, ticket_number)
                 );
 
-                CREATE TABLE IF NOT EXISTS snapshots (
+                CREATE TABLE IF NOT EXISTS source_snapshots (
                     snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id TEXT NOT NULL,
                     collected_at TEXT NOT NULL,
                     ticket_count INTEGER NOT NULL,
                     payload_json TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS notification_attempts (
-                    attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                CREATE TABLE IF NOT EXISTS load_snapshots (
+                    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id TEXT NOT NULL,
+                    collected_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS notification_deliveries (
+                    delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    recipient_id TEXT NOT NULL,
                     ticket_number TEXT NOT NULL,
                     attempted_at TEXT NOT NULL,
                     success INTEGER NOT NULL,
@@ -49,27 +64,68 @@ class SQLiteRepository:
                 """
             )
 
-    def is_baseline_initialized(self) -> bool:
-        return self.get_state("baseline_initialized_at") is not None
+    def is_baseline_initialized(self, source_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT baseline_initialized_at FROM source_states WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+        return bool(row and row["baseline_initialized_at"])
 
-    def mark_baseline_initialized(self, timestamp: str) -> None:
-        self.set_state("baseline_initialized_at", timestamp)
+    def mark_baseline_initialized(self, source_id: str, timestamp: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO source_states (source_id, baseline_initialized_at, last_run_at, last_success_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    baseline_initialized_at = excluded.baseline_initialized_at,
+                    last_run_at = excluded.last_run_at,
+                    last_success_at = excluded.last_success_at
+                """,
+                (source_id, timestamp, timestamp, timestamp),
+            )
 
-    def get_known_numbers(self, ticket_numbers: Iterable[str]) -> set[str]:
+    def update_source_run(self, source_id: str, run_at: str, success: bool) -> None:
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT baseline_initialized_at, last_success_at FROM source_states WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            baseline_initialized_at = existing["baseline_initialized_at"] if existing else None
+            last_success_at = run_at if success else (existing["last_success_at"] if existing else None)
+
+            connection.execute(
+                """
+                INSERT INTO source_states (source_id, baseline_initialized_at, last_run_at, last_success_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    baseline_initialized_at = excluded.baseline_initialized_at,
+                    last_run_at = excluded.last_run_at,
+                    last_success_at = excluded.last_success_at
+                """,
+                (source_id, baseline_initialized_at, run_at, last_success_at),
+            )
+
+    def get_known_numbers(self, source_id: str, ticket_numbers: Iterable[str]) -> set[str]:
         numbers = [number for number in ticket_numbers if number]
         if not numbers:
             return set()
 
         placeholders = ",".join("?" for _ in numbers)
-        query = f"SELECT ticket_number FROM seen_tickets WHERE ticket_number IN ({placeholders})"
+        query = (
+            "SELECT ticket_number FROM source_seen_tickets "
+            f"WHERE source_id = ? AND ticket_number IN ({placeholders})"
+        )
 
         with self._connect() as connection:
-            rows = connection.execute(query, numbers).fetchall()
+            rows = connection.execute(query, [source_id, *numbers]).fetchall()
         return {row[0] for row in rows}
 
-    def upsert_seen_tickets(self, tickets: Iterable[Ticket], seen_at: str) -> None:
+    def upsert_seen_tickets(self, source_id: str, tickets: Iterable[Ticket], seen_at: str) -> None:
         rows = [
             (
+                source_id,
                 ticket.number,
                 seen_at,
                 seen_at,
@@ -84,50 +140,85 @@ class SQLiteRepository:
         with self._connect() as connection:
             connection.executemany(
                 """
-                INSERT INTO seen_tickets (
+                INSERT INTO source_seen_tickets (
+                    source_id,
                     ticket_number,
                     first_seen_at,
                     last_seen_at,
                     last_payload_json
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(ticket_number) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, ticket_number) DO UPDATE SET
                     last_seen_at = excluded.last_seen_at,
                     last_payload_json = excluded.last_payload_json
                 """,
                 rows,
             )
 
-    def save_snapshot(self, tickets: Iterable[Ticket], collected_at: str) -> None:
+    def save_snapshot(self, source_id: str, tickets: Iterable[Ticket], collected_at: str) -> None:
         payload = [ticket.to_dict() for ticket in tickets]
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO snapshots (collected_at, ticket_count, payload_json)
-                VALUES (?, ?, ?)
+                INSERT INTO source_snapshots (source_id, collected_at, ticket_count, payload_json)
+                VALUES (?, ?, ?, ?)
                 """,
-                (collected_at, len(payload), json.dumps(payload, ensure_ascii=False)),
+                (source_id, collected_at, len(payload), json.dumps(payload, ensure_ascii=False)),
             )
 
-    def record_notification_attempt(
+    def save_load_snapshot(self, source_id: str, load_entries: Iterable[LoadEntry], collected_at: str) -> None:
+        payload = [entry.to_dict() for entry in load_entries]
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO load_snapshots (source_id, collected_at, payload_json)
+                VALUES (?, ?, ?)
+                """,
+                (source_id, collected_at, json.dumps(payload, ensure_ascii=False)),
+            )
+
+    def has_delivery(self, source_id: str, rule_id: str, recipient_id: str, ticket_number: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM notification_deliveries
+                WHERE source_id = ?
+                  AND rule_id = ?
+                  AND recipient_id = ?
+                  AND ticket_number = ?
+                  AND success = 1
+                LIMIT 1
+                """,
+                (source_id, rule_id, recipient_id, ticket_number),
+            ).fetchone()
+        return row is not None
+
+    def record_delivery(
         self,
-        ticket_number: str,
+        delivery: DeliveryRequest,
         attempted_at: str,
         result: NotificationResult,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO notification_attempts (
+                INSERT INTO notification_deliveries (
+                    source_id,
+                    rule_id,
+                    recipient_id,
                     ticket_number,
                     attempted_at,
                     success,
                     http_status,
                     response_text,
                     payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    ticket_number,
+                    delivery.source_id,
+                    delivery.rule_id,
+                    delivery.recipient_id,
+                    delivery.ticket.number,
                     attempted_at,
                     1 if result.success else 0,
                     result.status_code,
@@ -136,36 +227,21 @@ class SQLiteRepository:
                 ),
             )
 
-    def forget_ticket(self, ticket_number: str) -> int:
+    def forget_ticket(self, ticket_number: str, source_id: str | None = None) -> int:
         with self._connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM seen_tickets WHERE ticket_number = ?",
-                (ticket_number,),
-            )
+            if source_id:
+                cursor = connection.execute(
+                    "DELETE FROM source_seen_tickets WHERE source_id = ? AND ticket_number = ?",
+                    (source_id, ticket_number),
+                )
+            else:
+                cursor = connection.execute(
+                    "DELETE FROM source_seen_tickets WHERE ticket_number = ?",
+                    (ticket_number,),
+                )
             return cursor.rowcount
-
-    def set_state(self, key: str, value: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO app_state (state_key, state_value)
-                VALUES (?, ?)
-                ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value
-                """,
-                (key, value),
-            )
-
-    def get_state(self, key: str) -> str | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT state_value FROM app_state WHERE state_key = ?",
-                (key,),
-            ).fetchone()
-        return row[0] if row else None
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection
-
