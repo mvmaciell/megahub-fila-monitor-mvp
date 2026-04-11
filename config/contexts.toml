@@ -1,0 +1,35 @@
+[[contexts]]
+id = "marcus-session"
+name = "Sessao Marcus"
+enabled = true
+profile_dir = "data/browser-profile"
+
+[[contexts]]
+id = "gestor-session"
+name = "Sessao Gestor"
+enabled = false
+profile_dir = "data/browser-profile-gestor"
+
+[[sources]]
+id = "minha_fila_marcus"
+name = "Minha Fila Marcus"
+kind = "minha_fila"
+context_id = "marcus-session"
+url = "https://megahub.megawork.com/Chamado/MinhaFila"
+enabled = true
+first_page_only = true
+consultant_name = "Marcus Vinicius Maciel Vieira"
+only_open = true
+only_assigned_to_me = true
+
+[[sources]]
+id = "fila_gerencial"
+name = "Fila Gerencial"
+kind = "fila"
+context_id = "gestor-session"
+url = "https://megahub.megawork.com/Chamado/Index"
+enabled = false
+first_page_only = true
+include_closed = false
+include_assigned = true
+

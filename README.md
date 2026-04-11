@@ -1,15 +1,20 @@
-# MVP Monitor de Fila MegaHub
+# MegaHub Queue Monitor
 
-Monitor local da tela `Minha Fila` do MegaHub para detectar novos chamados por automacao de navegador e enviar notificacoes para Microsoft Teams via Power Automate/Workflow.
+Motor local de monitoramento para o MegaHub com suporte a:
 
-## Objetivo
+- multiplas fontes (`Minha Fila` e `Fila`)
+- multiplos destinatarios
+- regras de roteamento por perfil
+- notificacao no Teams via Power Automate
+- baseline por fonte
+- execucao `run-once` para Agendador do Windows
 
-- reutilizar sessao autenticada do navegador
-- ler periodicamente a primeira pagina da tela `Minha Fila`
-- criar baseline inicial sem disparar falso positivo
-- detectar novos numeros de chamado
-- enviar 1 notificacao por chamado novo no Teams
-- persistir estado localmente para evitar duplicidade
+## Escopo atual
+
+- `Minha Fila` operacional e validada
+- `Fila` preparada no codigo, mas desabilitada ate a liberacao de acesso
+- primeira pagina apenas
+- carga atual por consultor calculada a partir da snapshot da fonte
 
 ## Stack
 
@@ -22,19 +27,14 @@ Monitor local da tela `Minha Fila` do MegaHub para detectar novos chamados por a
 ## Estrutura
 
 - `main.py`: entrada da CLI
-- `src/megahub_monitor/config.py`: carga de configuracoes
-- `src/megahub_monitor/browser/session.py`: navegador com perfil persistente
-- `src/megahub_monitor/collectors/minha_fila.py`: captura da grade
-- `src/megahub_monitor/repository/sqlite_repository.py`: persistencia local
-- `src/megahub_monitor/notifiers/teams_workflow.py`: envio para Teams/Power Automate
-- `src/megahub_monitor/services/`: orquestracao do monitor
-- `data/`: banco local, logs e perfil do navegador
-
-## Pre-requisitos
-
-1. Python 3.11+
-2. Microsoft Edge instalado ou ajuste `PLAYWRIGHT_CHANNEL` se quiser outro navegador
-3. URL do workflow/webhook do Teams
+- `config/contexts.toml`: contextos autenticados e fontes
+- `config/routing.toml`: destinatarios e regras
+- `src/megahub_monitor/browser/`: sessoes persistentes do navegador
+- `src/megahub_monitor/collectors/`: coleta da grade por fonte
+- `src/megahub_monitor/notifiers/`: envio de cards para o Teams
+- `src/megahub_monitor/repository/`: persistencia local
+- `src/megahub_monitor/services/`: detecao, roteamento, carga e execucao
+- `data/`: banco, logs, lock e perfis de navegador
 
 ## Instalacao
 
@@ -46,80 +46,152 @@ python -m playwright install
 Copy-Item .env.example .env
 ```
 
-Preencha no `.env` pelo menos:
+Preencha no `.env`:
 
 - `TEAMS_WEBHOOK_URL`
-- caminhos, caso queira mudar a pasta `data/`
+- opcionalmente caminhos de banco/log/configs
 
-## Fluxo de uso
+## Configuracao
 
-### 1. Salvar a sessao autenticada
+### `.env`
+
+- `MONITOR_INTERVAL_SECONDS`: intervalo do loop continuo
+- `LOCK_FILE_PATH`: lock do `run-once`
+- `BROWSER_HEADLESS`: `true` ou `false`
+- `PLAYWRIGHT_CHANNEL`: `msedge` por padrao
+- `DATABASE_PATH`
+- `LOG_FILE_PATH`
+- `CONTEXTS_CONFIG_PATH`
+- `ROUTING_CONFIG_PATH`
+- `TEAMS_WEBHOOK_URL`
+
+### `config/contexts.toml`
+
+Define contextos autenticados e fontes monitoradas.
+
+Exemplo atual:
+
+- `marcus-session`: contexto ativo usando `data/browser-profile`
+- `gestor-session`: contexto preparado para a conta gerencial
+- `minha_fila_marcus`: fonte ativa
+- `fila_gerencial`: fonte preparada e desabilitada
+
+### `config/routing.toml`
+
+Define destinatarios e regras de roteamento.
+
+Exemplo atual:
+
+- `marcus`: recebe alertas da `Minha Fila`
+- `augusto`: preparado para receber alertas da `Fila`
+- ambos usam o mesmo webhook nesta fase
+
+## Comandos
+
+### Login manual
 
 ```powershell
 python main.py login
+python main.py login --source minha_fila_marcus
+python main.py login --context gestor-session
 ```
 
-O comando abre o navegador com um perfil dedicado em `data/browser-profile`. Faca o login manualmente e pressione `ENTER` no terminal quando a tela `Minha Fila` estiver visivel.
-
-### 2. Validar notificacao do Teams
+### Teste de notificacao
 
 ```powershell
 python main.py notify-test
+python main.py notify-test --recipient marcus
 ```
 
-### 3. Validar captura da tela
+### Snapshot de uma fonte
 
 ```powershell
-python main.py snapshot
+python main.py snapshot --source minha_fila_marcus
 ```
 
-Esse comando coleta a primeira pagina e imprime um resumo dos chamados detectados.
+### Execucao unica
 
-### 4. Iniciar o monitor
+```powershell
+python main.py run-once
+```
+
+Comportamento:
+
+- percorre todas as fontes habilitadas
+- cria baseline inicial por fonte sem notificar
+- detecta novos chamados nas execucoes seguintes
+- roteia alertas conforme `routing.toml`
+
+### Loop continuo
 
 ```powershell
 python main.py monitor
 ```
 
-Comportamento esperado:
-
-- primeira execucao: cria baseline e nao envia alerta
-- proximas execucoes: envia alerta apenas para novos numeros de chamado
-- polling a cada `120s`
-
-## Comandos disponiveis
+### Forcar reprocessamento em demo
 
 ```powershell
-python main.py login
-python main.py notify-test
-python main.py snapshot
-python main.py monitor
-python main.py monitor --once
-python main.py forget-ticket 41487
+python main.py forget-ticket 41487 --source minha_fila_marcus
+python main.py run-once
 ```
+
+## Agendador do Windows
+
+Forma recomendada para background:
+
+1. registrar a tarefa com o script abaixo
+2. manter intervalo de `2 minutos`
+3. o script cria uma tarefa para executar `run-once` com lockfile
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register-task.ps1
+```
+
+Parametros opcionais:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register-task.ps1 -TaskName "MegaHub Queue Monitor" -IntervalMinutes 2
+```
+
+Se preferir criar manualmente, o comando alvo e:
+
+```powershell
+C:\Users\mvmac\OneDrive\Documentos\New project\.venv\Scripts\python.exe C:\Users\mvmac\OneDrive\Documentos\New project\main.py run-once
+```
+
+O lockfile evita execucao concorrente se uma rodada ainda estiver em andamento.
 
 ## Persistencia local
 
 Banco SQLite em `data/megahub-monitor.db`:
 
-- `seen_tickets`: chamados ja vistos
-- `notification_attempts`: historico de tentativas de notificacao
-- `snapshots`: ultimo snapshot bruto por ciclo
-- `app_state`: estado tecnico do monitor, incluindo baseline
+- `source_states`: baseline e ultimo sucesso por fonte
+- `source_seen_tickets`: chamados vistos por fonte
+- `source_snapshots`: snapshots completos por fonte
+- `load_snapshots`: carga atual por consultor
+- `notification_deliveries`: entregas por regra/destinatario
 
-## Limites desta versao
+## Validacao realizada
 
-- monitora apenas a `primeira pagina`
-- depende do HTML/DOM atual da tela
-- se a sessao expirar, sera necessario executar `python main.py login` novamente
-- se o Teams falhar, o evento fica registrado, mas o MVP nao reenfileira automaticamente
-- a tela `Fila` generica ainda nao esta implementada
+Validado localmente nesta fase:
 
-## Evolucao prevista
+- `notify-test` com Adaptive Card
+- `snapshot` da fonte `minha_fila_marcus`
+- `run-once` com baseline por fonte
+- alerta segmentado do consultor com ticket forzado
 
-- suporte a `Fila` por gestor/time
-- paginacao completa
-- filtros configuraveis por usuario
-- dashboard/analytics de capacity
-- estrategia de reenvio controlado para falhas de notificacao
+## Limitacoes
 
+- primeira pagina apenas
+- depende do HTML/DOM atual do MegaHub
+- a fonte `Fila` ainda nao foi validada porque o acesso nao esta liberado
+- o mesmo webhook esta sendo usado por mais de um perfil nesta fase
+- ainda nao existe dashboard nem distribuicao automatica
+
+## Proximos passos
+
+- habilitar e validar a fonte `fila_gerencial`
+- confirmar filtros reais da tela `Fila`
+- validar carga por consultor com dados gerenciais reais
+- separar webhooks por perfil/canal
+- evoluir para multiplas filas e paginacao completa
