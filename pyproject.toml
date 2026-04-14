@@ -66,8 +66,9 @@ omit = [
     # Runtime-only modules (logging, CLI entrypoint, GUI tray)
     "src/megahub_monitor/logging_setup.py",
     "src/megahub_monitor/cli.py",
-    # GUI module — requires display/pystray, not testable in headless CI
+    # GUI modules — require display/pystray/tkinter, not testable in headless CI
     "src/megahub_monitor/tray_app.py",
+    "src/megahub_monitor/config_window.py",
 ]
 
 [tool.coverage.report]

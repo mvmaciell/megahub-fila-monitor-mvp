@@ -377,6 +377,15 @@ class StatusWindow:
             foreground="gray",
         ).grid(row=5, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 4))
 
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=6, column=0, columnspan=3, sticky="ew", pady=8, padx=8
+        )
+        ttk.Button(
+            parent,
+            text="Configuração Completa (membros, webhooks, filas) →",
+            command=self._open_config_window,
+        ).grid(row=7, column=0, columnspan=2, pady=4, padx=12, sticky="w")
+
     # ------------------------------------------------------------------
     def _refresh(self) -> None:
         import tkinter as tk
@@ -466,6 +475,10 @@ class StatusWindow:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
+    def _open_config_window(self) -> None:
+        from .config_window import ConfigWindow  # noqa: PLC0415
+        ConfigWindow(self._root).show()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -514,6 +527,7 @@ class TrayApp:
     def run(self) -> None:
         menu = pystray.Menu(
             pystray.MenuItem("Ver Status", self._open_status, default=True),
+            pystray.MenuItem("Configuração Completa", self._open_config),
             pystray.MenuItem("Executar Agora", self._run_once),
             pystray.MenuItem("Abrir Log", self._open_log),
             pystray.Menu.SEPARATOR,
@@ -559,6 +573,20 @@ class TrayApp:
         def _show() -> None:
             self._window = StatusWindow(self._db, self._root)
             self._window.show()
+
+        t = threading.Thread(target=_show, daemon=True)
+        t.start()
+
+    def _open_config(self, icon=None, item=None) -> None:
+        def _show() -> None:
+            import tkinter as tk  # noqa: PLC0415
+
+            from .config_window import ConfigWindow  # noqa: PLC0415
+            # ConfigWindow usa wait_window — precisa de um root Tk existente ou cria temporário
+            root = tk.Tk()
+            root.withdraw()
+            ConfigWindow(self._root).show()
+            root.destroy()
 
         t = threading.Thread(target=_show, daemon=True)
         t.start()
