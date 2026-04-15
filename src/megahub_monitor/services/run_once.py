@@ -13,7 +13,6 @@ from ..config import Settings, SourceConfig
 from ..errors import AuthenticationRequiredError, LockUnavailableError, NotificationError
 from ..models import Ticket, utc_now_iso
 from ..notifiers.teams_workflow import TeamsWorkflowNotifier
-from ..repository.sqlite_repository import SQLiteRepository
 from .detector import TicketDetector
 from .load_analyzer import LoadAnalyzer
 from .router import NotificationRouter
@@ -23,7 +22,7 @@ class RunOnceService:
     def __init__(
         self,
         settings: Settings,
-        repository: SQLiteRepository,
+        repository,
         detector: TicketDetector,
         load_analyzer: LoadAnalyzer,
         router: NotificationRouter,

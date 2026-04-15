@@ -4,6 +4,7 @@ import argparse
 
 from .adapters.catalog.toml_catalog import TomlTeamCatalog
 from .adapters.notification.teams_notifier import TeamsNotifier
+from .adapters.persistence.sqlite_repository import SQLiteStateRepository
 from .application.services.allocation_engine import AllocationEngine
 from .application.services.load_analyzer import LoadAnalyzer as AllocationLoadAnalyzer
 from .application.use_cases.detect_completion import DetectCompletionUseCase
@@ -22,7 +23,6 @@ from .domain.models import Ticket
 from .errors import ConfigurationError, MonitorError
 from .logging_setup import configure_logging
 from .notifiers import TeamsWorkflowNotifier
-from .repository import SQLiteRepository
 from .services import LoadAnalyzer, MonitorService, NotificationRouter, RunOnceService, TicketDetector
 
 
@@ -88,7 +88,7 @@ def main() -> int:
     settings = Settings.load()
     logger = configure_logging(settings.log_file_path)
 
-    repository = SQLiteRepository(settings.database_path, logger)
+    repository = SQLiteStateRepository(settings.database_path)
     repository.initialize()
 
     detector = TicketDetector(repository, logger)
