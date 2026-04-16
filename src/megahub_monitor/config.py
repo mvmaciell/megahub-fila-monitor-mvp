@@ -4,10 +4,19 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 from dotenv import load_dotenv
 
 from .errors import ConfigurationError
+
+
+class TeamsConfig(TypedDict):
+    enabled: bool
+    novo_status_labels: list[str]
+    completion_status_labels: list[str]
+    return_to_developer_labels: list[str]
+    approval_timeout_minutes: int
 
 
 def _to_bool(value: str | None, default: bool) -> bool:
@@ -304,9 +313,9 @@ class Settings:
         return profiles, subscriptions
 
     @staticmethod
-    def _load_teams_config(teams_path: Path) -> dict:
+    def _load_teams_config(teams_path: Path) -> TeamsConfig:
         """Load allocation settings from teams.toml. Returns safe defaults if file absent."""
-        defaults: dict = {
+        defaults: TeamsConfig = {
             "enabled": False,
             "novo_status_labels": ["NOVO"],
             "completion_status_labels": ["Fechado", "Resolvido"],
