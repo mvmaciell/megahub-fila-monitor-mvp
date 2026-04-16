@@ -33,6 +33,15 @@ class Notifier(ABC):
     ) -> NotificationResult: ...
 
     @abstractmethod
+    def send_batch_allocation_suggestion(
+        self,
+        coordinator_name: str,
+        webhook_url: str,
+        ticket_suggestions: list[tuple[Ticket, list[AllocationSuggestion]]],
+        load_board: list[EnhancedLoadEntry],
+    ) -> NotificationResult: ...
+
+    @abstractmethod
     def send_assignment_notice(
         self,
         developer_name: str,
@@ -56,6 +65,14 @@ class Notifier(ABC):
         webhook_url: str,
         ticket: Ticket,
         current_status: str,
+    ) -> NotificationResult: ...
+
+    @abstractmethod
+    def send_approval_reminder(
+        self,
+        coordinator_name: str,
+        webhook_url: str,
+        timed_out_approvals: list[dict],
     ) -> NotificationResult: ...
 
     @abstractmethod

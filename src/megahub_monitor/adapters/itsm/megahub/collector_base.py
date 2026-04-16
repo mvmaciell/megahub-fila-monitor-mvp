@@ -10,7 +10,13 @@ from playwright.sync_api import Page
 from ....config import Settings, SourceConfig
 from ....domain.errors import AuthenticationRequiredError, CollectionError
 from ....domain.models import Ticket
-from .dom_constants import CHECKBOX_SCRIPT, HEADER_ALIASES, TABLE_EXTRACTION_SCRIPT
+from .dom_constants import (
+    CHECKBOX_SCRIPT,
+    CLICK_NEXT_PAGE_SCRIPT,
+    HEADER_ALIASES,
+    PAGINATION_SCRIPT,
+    TABLE_EXTRACTION_SCRIPT,
+)
 
 
 def _normalize_text(value: str) -> str:
@@ -30,12 +36,6 @@ class BaseQueueCollector:
         self.logger = logger
 
     def collect(self, page: Page) -> list[Ticket]:
-        if not self.source.first_page_only:
-            self.logger.warning(
-                "A leitura alem da primeira pagina ainda nao esta implementada para '%s'.",
-                self.source.id,
-            )
-
         page.goto(self.source.url, wait_until="domcontentloaded")
         self._ensure_page_is_ready(page)
         self.apply_pre_filters(page)
@@ -44,8 +44,43 @@ class BaseQueueCollector:
 
         extracted = page.evaluate(TABLE_EXTRACTION_SCRIPT)
         tickets = self._build_tickets(extracted)
+
+        if not self.source.first_page_only:
+            page_num = 1
+            max_pages = 50
+            while page_num < max_pages:
+                pagination_info = page.evaluate(PAGINATION_SCRIPT)
+                if not pagination_info.get("found"):
+                    break
+
+                clicked = page.evaluate(CLICK_NEXT_PAGE_SCRIPT, pagination_info)
+                if not clicked:
+                    break
+
+                page_num += 1
+                page.wait_for_load_state("networkidle", timeout=15000)
+                self._wait_for_grid(page)
+
+                extracted = page.evaluate(TABLE_EXTRACTION_SCRIPT)
+                page_tickets = self._build_tickets(extracted)
+                if not page_tickets:
+                    break
+
+                existing_numbers = {t.number for t in tickets}
+                new_on_page = [t for t in page_tickets if t.number not in existing_numbers]
+                if not new_on_page:
+                    break
+
+                tickets.extend(new_on_page)
+                self.logger.info(
+                    "Pagina %s: +%s chamado(s), total acumulado: %s.",
+                    page_num,
+                    len(new_on_page),
+                    len(tickets),
+                )
+
         self.logger.info(
-            "Captura concluida para '%s' com %s chamado(s) visivel(is).",
+            "Captura concluida para '%s' com %s chamado(s).",
             self.source.id,
             len(tickets),
         )

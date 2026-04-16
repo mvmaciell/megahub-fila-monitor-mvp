@@ -60,6 +60,18 @@ class TeamsNotifier(Notifier):
         )
         return self._post(payload, webhook_url)
 
+    def send_batch_allocation_suggestion(
+        self,
+        coordinator_name: str,
+        webhook_url: str,
+        ticket_suggestions: list[tuple[Ticket, list[AllocationSuggestion]]],
+        load_board: list[EnhancedLoadEntry],
+    ) -> NotificationResult:
+        payload = self._build_batch_suggestion_card(
+            coordinator_name, ticket_suggestions, load_board
+        )
+        return self._post(payload, webhook_url)
+
     def send_assignment_notice(
         self,
         developer_name: str,
@@ -87,6 +99,15 @@ class TeamsNotifier(Notifier):
         current_status: str,
     ) -> NotificationResult:
         payload = self._build_return_card(recipient_name, ticket, current_status)
+        return self._post(payload, webhook_url)
+
+    def send_approval_reminder(
+        self,
+        coordinator_name: str,
+        webhook_url: str,
+        timed_out_approvals: list[dict],
+    ) -> NotificationResult:
+        payload = self._build_reminder_card(coordinator_name, timed_out_approvals)
         return self._post(payload, webhook_url)
 
     def send_test_message(
@@ -189,6 +210,94 @@ class TeamsNotifier(Notifier):
                 "wrap": True,
             },
         ]
+
+        return self._adaptive_card(body)
+
+    def _build_batch_suggestion_card(
+        self,
+        coordinator_name: str,
+        ticket_suggestions: list[tuple[Ticket, list[AllocationSuggestion]]],
+        load_board: list[EnhancedLoadEntry],
+    ) -> dict:
+        priority_colors = {
+            "imediata": "Attention",
+            "urgente": "Warning",
+        }
+        count = len(ticket_suggestions)
+
+        body: list[dict] = [
+            {
+                "type": "TextBlock",
+                "text": f"Sugestao de Alocacao — {count} chamado(s) novo(s)",
+                "weight": "Bolder",
+                "size": "Large",
+                "wrap": True,
+            },
+        ]
+
+        for ticket, suggestions in ticket_suggestions:
+            prio_lower = ticket.priority.strip().lower()
+            color = priority_colors.get(prio_lower, "Default")
+            prio_label = f" [{ticket.priority}]" if prio_lower in priority_colors else ""
+
+            ticket_facts = [
+                {"title": "Chamado", "value": f"{ticket.number}{prio_label}"},
+                {"title": "Frente", "value": ticket.front or "-"},
+                {"title": "Empresa", "value": ticket.company or "-"},
+                {"title": "Tipo", "value": ticket.ticket_type or "-"},
+            ]
+
+            suggestion_text = " | ".join(
+                f"#{s.rank} {s.member_name} (carga:{s.current_load}, {s.reason})"
+                for s in suggestions
+            ) or "Nenhum dev disponivel"
+
+            approve_cmds = "\n".join(
+                f"python main.py approve --ticket {ticket.number} --member {s.member_id}"
+                for s in suggestions
+            )
+
+            body.append({"type": "ColumnSet", "separator": True, "columns": [
+                {"type": "Column", "width": "stretch", "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": ticket.title or "Sem titulo",
+                        "weight": "Bolder",
+                        "wrap": True,
+                        "color": color,
+                    },
+                    {"type": "FactSet", "facts": ticket_facts},
+                    {
+                        "type": "TextBlock",
+                        "text": suggestion_text,
+                        "wrap": True,
+                        "isSubtle": True,
+                        "size": "Small",
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": approve_cmds,
+                        "fontType": "Monospace",
+                        "wrap": True,
+                        "size": "Small",
+                    },
+                ]},
+            ]})
+
+        # Load board at the bottom
+        load_facts = [
+            {"title": e.member_name, "value": str(e.open_tickets)}
+            for e in load_board
+        ] or [{"title": "Carga", "value": "Sem dados"}]
+
+        body.append({
+            "type": "TextBlock",
+            "text": "Quadro de carga atual",
+            "weight": "Bolder",
+            "separator": True,
+            "wrap": True,
+        })
+        body.append({"type": "FactSet", "facts": load_facts})
 
         return self._adaptive_card(body)
 
@@ -399,6 +508,64 @@ class TeamsNotifier(Notifier):
                 "isSubtle": True,
             },
         ]
+        return self._adaptive_card(body)
+
+    def _build_reminder_card(
+        self,
+        coordinator_name: str,
+        timed_out_approvals: list[dict],
+    ) -> dict:
+        import json as _json
+
+        count = len(timed_out_approvals)
+        body: list[dict] = [
+            {
+                "type": "TextBlock",
+                "text": f"Lembrete: {count} aprovacao(oes) pendente(s)",
+                "weight": "Bolder",
+                "size": "Large",
+                "color": "Warning",
+                "wrap": True,
+            },
+        ]
+
+        for approval in timed_out_approvals:
+            elapsed = approval.get("elapsed_minutes", "?")
+            ticket_num = approval.get("ticket_number", "?")
+
+            suggestions_raw = approval.get("suggestions_json", "[]")
+            try:
+                suggestions = _json.loads(suggestions_raw) if isinstance(suggestions_raw, str) else suggestions_raw
+            except (ValueError, TypeError):
+                suggestions = []
+
+            approve_cmds = "\n".join(
+                f"python main.py approve --ticket {ticket_num} --member {s['member_id']}"
+                for s in suggestions
+                if isinstance(s, dict) and "member_id" in s
+            ) or f"python main.py approve --ticket {ticket_num} --member <id>"
+
+            body.append({
+                "type": "Container",
+                "separator": True,
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": f"Chamado {ticket_num} — pendente ha {elapsed} min",
+                        "weight": "Bolder",
+                        "color": "Attention",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": approve_cmds,
+                        "fontType": "Monospace",
+                        "wrap": True,
+                        "size": "Small",
+                    },
+                ],
+            })
+
         return self._adaptive_card(body)
 
     def _build_test_card(self, recipient_name: str, recipient_role: str) -> dict:

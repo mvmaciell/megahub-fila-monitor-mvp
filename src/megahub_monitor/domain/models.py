@@ -131,6 +131,7 @@ class TeamMember:
     active: bool = True
     webhook_url: str = ""
     max_concurrent_tickets: int = 5
+    managed_fronts: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
